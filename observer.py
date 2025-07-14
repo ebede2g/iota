@@ -82,6 +82,28 @@ def scan_calendar_files():
     return result
 
 
+def remove_outdated_files(known_files):
+    now = datetime.now()
+    cutoff = now - timedelta(days=1)
+    to_remove = {}
+
+    for user, cals in known_files.items():
+        for cal, files in cals.items():
+            cal_path = os.path.join(WATCH_DIR, user, cal)
+            for f in files:
+                try:
+                    dt = datetime.strptime(f.replace('.ics', ''), "%Y%m%dT%H%M%S")
+                    if dt < cutoff:
+                        full_path = os.path.join(cal_path, f)
+                        os.remove(full_path)
+                        to_remove.setdefault(user, {}).setdefault(cal, []).append(f)
+                        log.info(f"[AUTO-REMOVE] Видалено застарілий файл: {full_path}")
+                except Exception as e:
+                    log.warning(f"Не вдалося обробити дату файлу {f}: {e}")
+
+    return to_remove
+
+
 @app.route('/extKGP', methods=['POST', 'OPTIONS'])
 def ext_kgp():
     if request.method == 'OPTIONS':
@@ -143,25 +165,18 @@ def watch_and_notify():
     known_files = load_json(KNOWN_FILES_FILE)
 
     while True:
+        outdated_removed = remove_outdated_files(known_files)
         current_files = scan_calendar_files()
         toCreate = {}
-        toRemove = {}
+        toRemove = outdated_removed
 
         for user, cals in current_files.items():
             for cal, files in cals.items():
                 known_set = set(known_files.get(user, {}).get(cal, []))
                 current_set = set(files)
-
                 new_files = current_set - known_set
                 if new_files:
                     toCreate.setdefault(user, {}).setdefault(cal, []).extend(new_files)
-
-        for user, cals in known_files.items():
-            for cal, files in cals.items():
-                current_set = set(current_files.get(user, {}).get(cal, []))
-                removed_files = set(files) - current_set
-                if removed_files:
-                    toRemove.setdefault(user, {}).setdefault(cal, []).extend(removed_files)
 
         tokens_map = load_json(TOKEN_FILE)
         delivery_cache = load_json(DELIVERY_CACHE_FILE)
@@ -182,7 +197,6 @@ def watch_and_notify():
                         if delivery_cache.get(delivered_key) is True:
                             log.info(f"[SKIP] Повідомлення вже підтверджено: {delivered_key}")
                             continue
-
                         send_fcm_message(token, data_payload)
 
         for user, cals in toRemove.items():
